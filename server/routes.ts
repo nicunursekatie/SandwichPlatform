@@ -3493,9 +3493,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Register project routes
-  const { projectsRoutes } = await import("./routes/projects");
-  app.use("/api", projectsRoutes);
+  // Project routes are already registered by setupAllRoutes above
 
   // Static file serving for documents
   app.use("/documents", express.static("public/documents"));

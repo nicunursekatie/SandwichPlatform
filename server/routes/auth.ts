@@ -1,8 +1,7 @@
-import type { Express } from "express";
 import { storage } from "../storage-wrapper";
 import { logger } from "../middleware/logger";
 
-export function setupAuthRoutes(app: Express, isAuthenticated: any, requirePermission: any) {
+export function setupAuthRoutes(app: any, isAuthenticated: any, requirePermission: any) {
   // Auth routes - Fixed to work with temp auth system
   app.get("/api/auth/user", isAuthenticated, async (req: any, res: any) => {
     try {
