@@ -1,348 +1,294 @@
-import { Router } from "express";
-import { z } from "zod";
-import multer from "multer";
-import path from "path";
 import { storage } from "../storage-wrapper";
-import { sanitizeMiddleware } from "../middleware/sanitizer";
-import { insertProjectSchema, insertProjectTaskSchema, insertProjectCommentSchema } from "@shared/schema";
+import { logger } from "../middleware/logger";
+import { insertProjectSchema, insertTaskCompletionSchema } from "@shared/schema";
+import multer from "multer";
 
-// Configure multer for file uploads
-const taskUpload = multer({
-  dest: 'uploads/tasks/',
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
-  fileFilter: (req, file, cb) => {
-    const allowedTypes = /jpeg|jpg|png|gif|pdf|doc|docx|txt|csv|xlsx/;
-    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = allowedTypes.test(file.mimetype);
-    
-    if (mimetype && extname) {
+// Configure multer for project files (supports various file types)
+const projectFilesUpload = multer({
+  dest: "uploads/projects/",
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit per file
+  fileFilter: (req: any, file: any, cb: any) => {
+    // Allow most common file types for project documentation
+    const allowedTypes = [
+      "image/jpeg",
+      "image/jpg", 
+      "image/png",
+      "image/gif",
+      "image/webp",
+      "application/pdf",
+      "text/plain",
+      "text/csv",
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.ms-excel",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.ms-powerpoint",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "application/zip",
+      "application/x-zip-compressed",
+    ];
+
+    if (allowedTypes.includes(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error('Only images, PDFs, and documents are allowed'));
+      cb(new Error("File type not supported"));
     }
-  }
+  },
 });
 
-const router = Router();
-
-// Project management routes
-router.get("/projects", async (req, res) => {
-  try {
-    const projects = await storage.getAllProjects();
-    res.json(projects);
-  } catch (error) {
-    console.error("Error fetching projects:", error);
-    res.status(500).json({ error: "Failed to fetch projects" });
-  }
-});
-
-router.get("/projects/:id", async (req, res) => {
-  try {
-    const id = parseInt(req.params.id);
-    const project = await storage.getProject(id);
-    if (!project) {
-      return res.status(404).json({ error: "Project not found" });
+export function setupProjectRoutes(app: any, isAuthenticated: any, requirePermission: any) {
+  // Projects
+  app.get("/api/projects", async (req: any, res: any) => {
+    try {
+      const projects = await storage.getAllProjects();
+      res.json(projects);
+    } catch (error) {
+      logger.error("Failed to fetch projects", error);
+      res.status(500).json({ message: "Failed to fetch projects" });
     }
-    res.json(project);
-  } catch (error) {
-    console.error("Error fetching project:", error);
-    res.status(500).json({ error: "Failed to fetch project" });
-  }
-});
+  });
 
-router.post("/projects", sanitizeMiddleware, async (req, res) => {
-  try {
-    const result = insertProjectSchema.safeParse(req.body);
-    if (!result.success) {
-      return res.status(400).json({ error: result.error.message });
+  app.post("/api/projects", requirePermission("edit_data"), async (req: any, res: any) => {
+    try {
+      console.log("Received project data:", req.body);
+      const projectData = insertProjectSchema.parse(req.body);
+      console.log("Parsed project data:", projectData);
+      const project = await storage.createProject(projectData);
+      res.status(201).json(project);
+    } catch (error) {
+      console.error("Project creation error details:", error);
+      logger.error("Failed to create project", error);
+      res.status(400).json({
+        message: "Invalid project data",
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
     }
-    const project = await storage.createProject(result.data);
-    res.status(201).json(project);
-  } catch (error) {
-    console.error("Error creating project:", error);
-    res.status(500).json({ error: "Failed to create project" });
-  }
-});
+  });
 
-router.patch("/projects/:id", sanitizeMiddleware, async (req, res) => {
-  try {
-    const id = parseInt(req.params.id);
-    const updates = req.body;
-    const project = await storage.updateProject(id, updates);
-    if (!project) {
-      return res.status(404).json({ error: "Project not found" });
-    }
-    res.json(project);
-  } catch (error) {
-    console.error("Error updating project:", error);
-    res.status(500).json({ error: "Failed to update project" });
-  }
-});
+  app.post("/api/projects/:id/claim", async (req: any, res: any) => {
+    try {
+      const id = parseInt(req.params.id);
+      const { assigneeName } = req.body;
 
-router.delete("/projects/:id", async (req, res) => {
-  try {
-    const id = parseInt(req.params.id);
-    const success = await storage.deleteProject(id);
-    if (!success) {
-      return res.status(404).json({ error: "Project not found" });
-    }
-    res.status(204).send();
-  } catch (error) {
-    console.error("Error deleting project:", error);
-    res.status(500).json({ error: "Failed to delete project" });
-  }
-});
+      const updatedProject = await storage.updateProject(id, {
+        status: "in_progress",
+        assigneeName: assigneeName || "You",
+      });
 
-// Project Task routes
-router.get("/projects/:projectId/tasks", async (req, res) => {
-  try {
-    const projectId = parseInt(req.params.projectId);
-    const tasks = await storage.getProjectTasks(projectId);
-    res.json(tasks);
-  } catch (error) {
-    console.error("Error fetching project tasks:", error);
-    res.status(500).json({ error: "Failed to fetch tasks" });
-  }
-});
-
-router.post("/projects/:projectId/tasks", sanitizeMiddleware, async (req, res) => {
-  try {
-    const projectId = parseInt(req.params.projectId);
-    const taskData = { ...req.body, projectId };
-    const result = insertProjectTaskSchema.safeParse(taskData);
-    if (!result.success) {
-      return res.status(400).json({ error: result.error.message });
-    }
-    const task = await storage.createProjectTask(result.data);
-    
-    // Create task assignment notifications and emit WebSocket events
-    if (task.assigneeIds && task.assigneeIds.length > 0) {
-      const user = (req as any).user; // Standardized authentication
-      
-      for (const assigneeId of task.assigneeIds) {
-        if (assigneeId && assigneeId.trim()) {
-          try {
-            // Create notification in database
-            const notification = await storage.createNotification({
-              userId: assigneeId,
-              type: 'task_assignment',
-              title: 'New Task Assignment',
-              message: `${task.title} has been assigned to you`,
-              relatedType: 'task',
-              relatedId: task.id,
-              isRead: false
-            });
-
-            // Emit WebSocket notification if available
-            if (typeof (global as any).broadcastTaskAssignment === 'function') {
-              (global as any).broadcastTaskAssignment(assigneeId, {
-                type: 'task_assignment',
-                message: 'You have been assigned a new task',
-                taskId: task.id,
-                taskTitle: task.title,
-                notificationId: notification.id
-              });
-            }
-          } catch (notificationError) {
-            console.error(`Error creating notification for user ${assigneeId}:`, notificationError);
-            // Don't fail task creation if notification fails
-          }
-        }
+      if (!updatedProject) {
+        return res.status(404).json({ message: "Project not found" });
       }
-    }
-    
-    res.status(201).json(task);
-  } catch (error) {
-    console.error("Error creating project task:", error);
-    res.status(500).json({ error: "Failed to create task" });
-  }
-});
 
-router.patch("/projects/:projectId/tasks/:taskId", sanitizeMiddleware, async (req, res) => {
-  try {
-    const taskId = parseInt(req.params.taskId);
-    const projectId = parseInt(req.params.projectId);
-    const updates = req.body;
-    
-    console.log(`PATCH request - Task ID: ${taskId}, Project ID: ${projectId}`);
-    console.log("Updates payload:", updates);
-    
-    // Get original task to compare assignees
-    const originalTask = await storage.getProjectTask(taskId);
-    
-    const task = await storage.updateProjectTask(taskId, updates);
-    if (!task) {
-      console.log(`Task ${taskId} not found in database`);
-      return res.status(404).json({ error: "Task not found" });
+      res.json(updatedProject);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to claim project" });
     }
-    
-    // Check if assignees were added (new assigneeIds that weren't in original)
-    if (updates.assigneeIds && Array.isArray(updates.assigneeIds)) {
-      const originalAssigneeIds = originalTask?.assigneeIds || [];
-      const newAssigneeIds = updates.assigneeIds.filter(id => 
-        id && id.trim() && !originalAssigneeIds.includes(id)
-      );
-      
-      // Create notifications for newly assigned users
-      if (newAssigneeIds.length > 0) {
-        const user = (req as any).user; // Standardized authentication
-        
-        for (const assigneeId of newAssigneeIds) {
-          try {
-            // Create notification in database
-            const notification = await storage.createNotification({
-              userId: assigneeId,
-              type: 'task_assignment',
-              title: 'New Task Assignment',
-              message: `${task.title} has been assigned to you`,
-              relatedType: 'task',
-              relatedId: task.id,
-              isRead: false
-            });
+  });
 
-            // Emit WebSocket notification if available
-            if (typeof (global as any).broadcastTaskAssignment === 'function') {
-              (global as any).broadcastTaskAssignment(assigneeId, {
-                type: 'task_assignment',
-                message: 'You have been assigned a new task',
-                taskId: task.id,
-                taskTitle: task.title,
-                notificationId: notification.id
-              });
-            }
-          } catch (notificationError) {
-            console.error(`Error creating notification for user ${assigneeId}:`, notificationError);
-            // Don't fail task update if notification fails
-          }
-        }
+  app.put("/api/projects/:id", requirePermission("edit_data"), async (req: any, res: any) => {
+    try {
+      const id = parseInt(req.params.id);
+      const updates = req.body;
+
+      // Filter out timestamp fields that shouldn't be updated directly
+      const { createdAt, updatedAt, ...validUpdates } = updates;
+
+      const updatedProject = await storage.updateProject(id, validUpdates);
+
+      if (!updatedProject) {
+        return res.status(404).json({ message: "Project not found" });
       }
+
+      res.json(updatedProject);
+    } catch (error) {
+      logger.error("Failed to update project", error);
+      res.status(500).json({ message: "Failed to update project" });
     }
-    
-    console.log(`Task ${taskId} updated successfully`);
-    res.json(task);
-  } catch (error) {
-    console.error("Error updating project task:", error);
-    res.status(500).json({ error: "Failed to update task" });
-  }
-});
+  });
 
-router.delete("/projects/:projectId/tasks/:taskId", async (req, res) => {
-  try {
-    const taskId = parseInt(req.params.taskId);
-    const success = await storage.deleteProjectTask(taskId);
-    if (!success) {
-      return res.status(404).json({ error: "Task not found" });
+  app.patch("/api/projects/:id", requirePermission("edit_data"), async (req: any, res: any) => {
+    try {
+      const id = parseInt(req.params.id);
+      const updates = req.body;
+
+      // Filter out timestamp fields that shouldn't be updated directly
+      const { createdAt, updatedAt, ...validUpdates } = updates;
+
+      const updatedProject = await storage.updateProject(id, validUpdates);
+
+      if (!updatedProject) {
+        return res.status(404).json({ message: "Project not found" });
+      }
+
+      res.json(updatedProject);
+    } catch (error) {
+      logger.error("Failed to update project", error);
+      res.status(500).json({ message: "Failed to update project" });
     }
-    res.status(204).send();
-  } catch (error) {
-    console.error("Error deleting project task:", error);
-    res.status(500).json({ error: "Failed to delete task" });
-  }
-});
+  });
 
-// Get project congratulations
-router.get("/projects/:projectId/congratulations", async (req, res) => {
-  try {
-    const projectId = parseInt(req.params.projectId);
-    const congratulations = await storage.getProjectCongratulations(projectId);
-    res.json(congratulations);
-  } catch (error) {
-    console.error("Error fetching project congratulations:", error);
-    res.status(500).json({ error: "Failed to fetch congratulations" });
-  }
-});
+  app.delete("/api/projects/:id", requirePermission("edit_data"), async (req: any, res: any) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ message: "Invalid project ID" });
+      }
 
-// Task file upload route
-router.post("/projects/:projectId/tasks/:taskId/upload", taskUpload.array('files', 5), async (req, res) => {
-  try {
-    const taskId = parseInt(req.params.taskId);
-    const files = req.files as Express.Multer.File[];
-    
-    if (!files || files.length === 0) {
-      return res.status(400).json({ error: "No files uploaded" });
+      const deleted = await storage.deleteProject(id);
+      if (!deleted) {
+        return res.status(404).json({ message: "Project not found" });
+      }
+
+      res.status(204).send();
+    } catch (error) {
+      logger.error("Failed to delete project", error);
+      res.status(500).json({ message: "Failed to delete project" });
     }
+  });
 
-    // Get current task to append to existing attachments
-    const task = await storage.getProjectTasks(parseInt(req.params.projectId));
-    const currentTask = task.find(t => t.id === taskId);
-    
-    if (!currentTask) {
-      return res.status(404).json({ error: "Task not found" });
+  // Task completion routes for multi-user tasks
+  app.post("/api/tasks/:taskId/complete", async (req: any, res: any) => {
+    try {
+      const taskId = parseInt(req.params.taskId);
+      const user = req.session?.user;
+      const { notes } = req.body;
+
+      if (!user) {
+        return res.status(401).json({ error: "Authentication required" });
+      }
+
+      // Check if user is assigned to this task
+      const task = await storage.getTaskById(taskId);
+      if (!task) {
+        return res.status(404).json({ error: "Task not found" });
+      }
+
+      const assigneeIds = task.assigneeIds || [];
+      if (!assigneeIds.includes(user.id)) {
+        return res.status(403).json({ error: "You are not assigned to this task" });
+      }
+
+      // Add completion record
+      const completionData = insertTaskCompletionSchema.parse({
+        taskId: taskId,
+        userId: user.id,
+        userName: user.displayName || user.email,
+        notes: notes
+      });
+
+      const completion = await storage.createTaskCompletion(completionData);
+
+      // Check completion status
+      const allCompletions = await storage.getTaskCompletions(taskId);
+      const isFullyCompleted = allCompletions.length >= assigneeIds.length;
+
+      // If all users completed, update task status
+      if (isFullyCompleted && task.status !== 'completed') {
+        await storage.updateTaskStatus(taskId, 'completed');
+      }
+
+      res.json({ 
+        completion: completion, 
+        isFullyCompleted,
+        totalCompletions: allCompletions.length,
+        totalAssignees: assigneeIds.length
+      });
+    } catch (error) {
+      console.error("Error completing task:", error);
+      res.status(500).json({ error: "Failed to complete task" });
     }
+  });
 
-    // Parse existing attachments
-    let existingAttachments = [];
-    if (currentTask.attachments) {
+  // Remove completion by current user
+  app.delete("/api/tasks/:taskId/complete", async (req: any, res: any) => {
+    try {
+      const taskId = parseInt(req.params.taskId);
+      const user = req.session?.user;
+
+      if (!user) {
+        return res.status(401).json({ error: "Authentication required" });
+      }
+
+      // Remove completion record
+      const success = await storage.removeTaskCompletion(taskId, user.id);
+      if (!success) {
+        return res.status(404).json({ error: "Completion not found" });
+      }
+
+      // Update task status back to in_progress if it was completed
+      const task = await storage.getTaskById(taskId);
+      if (task?.status === 'completed') {
+        await storage.updateTaskStatus(taskId, 'in_progress');
+      }
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error removing completion:", error);
+      res.status(500).json({ error: "Failed to remove completion" });
+    }
+  });
+
+  // Get task completions
+  app.get("/api/tasks/:taskId/completions", async (req: any, res: any) => {
+    try {
+      const taskId = parseInt(req.params.taskId);
+      const completions = await storage.getTaskCompletions(taskId);
+      res.json(completions);
+    } catch (error) {
+      console.error("Error fetching completions:", error);
+      res.status(500).json({ error: "Failed to fetch completions" });
+    }
+  });
+
+  // Project Files
+  app.post(
+    "/api/projects/:id/files",
+    projectFilesUpload.array("files"),
+    async (req: any, res: any) => {
       try {
-        existingAttachments = JSON.parse(currentTask.attachments);
-      } catch (e) {
-        existingAttachments = [];
+        const projectId = parseInt(req.params.id);
+        if (isNaN(projectId)) {
+          return res.status(400).json({ message: "Invalid project ID" });
+        }
+
+        const files = req.files as any[];
+        if (!files || files.length === 0) {
+          return res.status(400).json({ message: "No files uploaded" });
+        }
+
+        // Process uploaded files and return metadata
+        const fileMetadata = files.map((file: any) => ({
+          name: file.originalname,
+          size: file.size,
+          mimetype: file.mimetype,
+          path: file.path,
+          uploadedAt: new Date().toISOString(),
+        }));
+
+        res.status(201).json({
+          message: "Files uploaded successfully",
+          files: fileMetadata,
+        });
+      } catch (error) {
+        logger.error("Failed to upload project files", error);
+        res.status(500).json({ message: "Failed to upload files" });
       }
+    },
+  );
+
+  app.get("/api/projects/:id/files", async (req: any, res: any) => {
+    try {
+      const projectId = parseInt(req.params.id);
+      if (isNaN(projectId)) {
+        return res.status(400).json({ message: "Invalid project ID" });
+      }
+
+      // For now, return empty array as file storage is basic
+      // In a production app, you'd store file metadata in database
+      res.json([]);
+    } catch (error) {
+      logger.error("Failed to fetch project files", error);
+      res.status(500).json({ message: "Failed to fetch files" });
     }
-
-    // Add new file info
-    const newAttachments = files.map(file => ({
-      filename: file.filename,
-      originalname: file.originalname,
-      mimetype: file.mimetype,
-      size: file.size,
-      uploadedAt: new Date().toISOString()
-    }));
-
-    const allAttachments = [...existingAttachments, ...newAttachments];
-
-    // Update task with new attachments
-    const updatedTask = await storage.updateProjectTask(taskId, {
-      attachments: JSON.stringify(allAttachments)
-    });
-
-    res.json({ task: updatedTask, uploadedFiles: newAttachments });
-  } catch (error) {
-    console.error("Error uploading task files:", error);
-    res.status(500).json({ error: "Failed to upload files" });
-  }
-});
-
-// Project Comment routes
-router.get("/projects/:projectId/comments", async (req, res) => {
-  try {
-    const projectId = parseInt(req.params.projectId);
-    const comments = await storage.getProjectComments(projectId);
-    res.json(comments);
-  } catch (error) {
-    console.error("Error fetching project comments:", error);
-    res.status(500).json({ error: "Failed to fetch comments" });
-  }
-});
-
-router.post("/projects/:projectId/comments", sanitizeMiddleware, async (req, res) => {
-  try {
-    const projectId = parseInt(req.params.projectId);
-    const commentData = { ...req.body, projectId };
-    const result = insertProjectCommentSchema.safeParse(commentData);
-    if (!result.success) {
-      return res.status(400).json({ error: result.error.message });
-    }
-    const comment = await storage.createProjectComment(result.data);
-    res.status(201).json(comment);
-  } catch (error) {
-    console.error("Error creating project comment:", error);
-    res.status(500).json({ error: "Failed to create comment" });
-  }
-});
-
-router.delete("/projects/:projectId/comments/:commentId", async (req, res) => {
-  try {
-    const commentId = parseInt(req.params.commentId);
-    const success = await storage.deleteProjectComment(commentId);
-    if (!success) {
-      return res.status(404).json({ error: "Comment not found" });
-    }
-    res.status(204).send();
-  } catch (error) {
-    console.error("Error deleting project comment:", error);
-    res.status(500).json({ error: "Failed to delete comment" });
-  }
-});
-
-export { router as projectsRoutes };
+  });
+}
