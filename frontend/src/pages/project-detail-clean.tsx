@@ -754,7 +754,6 @@ export default function ProjectDetailClean({ projectId, onBack }: ProjectDetailC
                           <Checkbox
                             checked={task.status === 'completed'}
                             onCheckedChange={() => handleToggleTaskCompletion(task)}
-                            disabled={!canEdit}
                             className="w-5 h-5"
                             title={task.assigneeIds?.length > 1 ? "All team members must complete their portions first" : "Mark task complete"}
                           />
@@ -845,7 +844,6 @@ export default function ProjectDetailClean({ projectId, onBack }: ProjectDetailC
                             <Button 
                               variant="outline" 
                               size="sm"
-                              disabled={!canEdit}
                               onClick={() => setEditingTask(task)}
                               className="w-8 h-8 p-0"
                             >
@@ -1002,7 +1000,6 @@ export default function ProjectDetailClean({ projectId, onBack }: ProjectDetailC
                         <Button 
                           variant="outline" 
                           size="sm"
-                          disabled={!canEdit}
                           onClick={() => handleDeleteTask(task.id)}
                           className="w-8 h-8 p-0 text-red-600 hover:text-red-700"
                         >
